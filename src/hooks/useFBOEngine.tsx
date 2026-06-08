@@ -2,6 +2,7 @@ import { useRef, useEffect, createContext, useContext } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useSimulationStore } from '@/store/simulationStore'
+import { generateHeightMap } from '@/utils/heightmap'
 
 import fullscreenVert from '@/shaders/fullscreen.vert?raw'
 import caUpdateFrag from '@/shaders/ca-update.frag?raw'
@@ -12,6 +13,7 @@ class FBOEngine {
   resolution: number
   readBuffer: THREE.WebGLRenderTarget
   writeBuffer: THREE.WebGLRenderTarget
+  heightmapTexture: THREE.DataTexture
   windTexture: THREE.DataTexture
   ignitionTexture: THREE.DataTexture
   ignitionData: Uint8Array
@@ -22,14 +24,12 @@ class FBOEngine {
   quad: THREE.Mesh
   initialized: boolean
   stepCount: number
-  lastReadBufferId: number
 
   constructor(gl: THREE.WebGLRenderer, resolution: number) {
     this.gl = gl
     this.resolution = resolution
     this.initialized = false
     this.stepCount = 0
-    this.lastReadBufferId = -1
 
     const size = resolution
 
@@ -44,6 +44,23 @@ class FBOEngine {
 
     this.readBuffer = new THREE.WebGLRenderTarget(size, size, rtOpts)
     this.writeBuffer = new THREE.WebGLRenderTarget(size, size, rtOpts)
+
+    const hData = generateHeightMap(size)
+    const hmData = new Float32Array(size * size * 4)
+    for (let i = 0; i < size * size; i++) {
+      hmData[i * 4] = hData[i]
+      hmData[i * 4 + 1] = 0.0
+      hmData[i * 4 + 2] = 0.0
+      hmData[i * 4 + 3] = 1.0
+    }
+    this.heightmapTexture = new THREE.DataTexture(
+      hmData, size, size, THREE.RGBAFormat, THREE.FloatType
+    )
+    this.heightmapTexture.minFilter = THREE.LinearFilter
+    this.heightmapTexture.magFilter = THREE.LinearFilter
+    this.heightmapTexture.wrapS = THREE.ClampToEdgeWrapping
+    this.heightmapTexture.wrapT = THREE.ClampToEdgeWrapping
+    this.heightmapTexture.needsUpdate = true
 
     const windData = new Float32Array(size * size * 4)
     const dir = (45 * Math.PI) / 180
@@ -74,6 +91,7 @@ class FBOEngine {
       fragmentShader: caUpdateFrag,
       uniforms: {
         uStateTexture: { value: null },
+        uHeightmap: { value: this.heightmapTexture },
         uWindTexture: { value: this.windTexture },
         uIgnitionTexture: { value: this.ignitionTexture },
         uResolution: { value: new THREE.Vector2(size, size) },
@@ -86,6 +104,7 @@ class FBOEngine {
         uHumidity: { value: 0.2 },
         uDelta: { value: 1.0 },
         uMaxTempIncrease: { value: 0.35 },
+        uSlopeFactor: { value: 2.0 },
         uReset: { value: 0 },
       },
       depthTest: false,
@@ -97,6 +116,7 @@ class FBOEngine {
       fragmentShader: fireRenderFrag,
       uniforms: {
         uStateTexture: { value: null },
+        uHeightmap: { value: this.heightmapTexture },
         uWindTexture: { value: this.windTexture },
         uTime: { value: 0 },
         uResolution: { value: new THREE.Vector2(size, size) },
@@ -189,6 +209,7 @@ class FBOEngine {
     humidity: number
     delta: number
     maxTempIncrease: number
+    slopeFactor: number
   }) {
     const gl = this.gl
 
@@ -204,6 +225,7 @@ class FBOEngine {
     this.caMaterial.uniforms.uHumidity.value = params.humidity
     this.caMaterial.uniforms.uDelta.value = params.delta
     this.caMaterial.uniforms.uMaxTempIncrease.value = params.maxTempIncrease * params.delta
+    this.caMaterial.uniforms.uSlopeFactor.value = params.slopeFactor
 
     this.quad.material = this.caMaterial
 
@@ -281,6 +303,7 @@ class FBOEngine {
   dispose() {
     this.readBuffer.dispose()
     this.writeBuffer.dispose()
+    this.heightmapTexture.dispose()
     this.windTexture.dispose()
     this.ignitionTexture.dispose()
     this.caMaterial.dispose()
@@ -368,6 +391,7 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
           humidity: state.humidity,
           delta,
           maxTempIncrease: 0.35,
+          slopeFactor: state.slopeFactor,
         })
 
         if (subSteps > 1 && i < subSteps - 1) {

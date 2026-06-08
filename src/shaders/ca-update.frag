@@ -2,6 +2,7 @@ precision highp float;
 precision highp sampler2D;
 
 uniform sampler2D uStateTexture;
+uniform sampler2D uHeightmap;
 uniform sampler2D uWindTexture;
 uniform sampler2D uIgnitionTexture;
 uniform vec2 uResolution;
@@ -14,6 +15,7 @@ uniform float uSpreadRate;
 uniform float uHumidity;
 uniform float uDelta;
 uniform float uMaxTempIncrease;
+uniform float uSlopeFactor;
 uniform int uReset;
 
 varying vec2 vUv;
@@ -22,9 +24,31 @@ const float BURN_UNBURNED = 0.0;
 const float BURN_BURNING = 0.5;
 const float BURN_ASH = 1.0;
 
+const float TERRAIN_SCALE = 5.0;
+
 vec2 windVector(vec2 uv) {
     vec4 w = texture2D(uWindTexture, uv);
     return w.rg * 2.0 - 1.0;
+}
+
+float sampleHeight(vec2 uv) {
+    return texture2D(uHeightmap, uv).r * TERRAIN_SCALE;
+}
+
+vec3 computeNormal(vec2 uv) {
+    float dx = 1.0 / uResolution.x;
+    float dy = 1.0 / uResolution.y;
+    float hL = sampleHeight(uv + vec2(-dx, 0.0));
+    float hR = sampleHeight(uv + vec2( dx, 0.0));
+    float hD = sampleHeight(uv + vec2(0.0, -dy));
+    float hU = sampleHeight(uv + vec2(0.0,  dy));
+    vec3 n = normalize(vec3(hL - hR, 2.0 * dx, hD - hU));
+    return n;
+}
+
+float computeSlopeAngle(vec2 uv) {
+    vec3 n = computeNormal(uv);
+    return acos(clamp(n.y, 0.0, 1.0));
 }
 
 void main() {
@@ -75,6 +99,7 @@ void main() {
     dists[7] = 1.414;
 
     vec2 windVec = windVector(vUv) * uWindStrength;
+    float hCurrent = sampleHeight(vUv);
 
     float heatInput = 0.0;
 
@@ -93,7 +118,34 @@ void main() {
             float windAmplification = 1.0 + max(windBias, 0.0) * 2.5;
             float windSuppression = max(1.0 + min(windBias, 0.0) * 0.9, 0.05);
 
-            float effectiveSpread = uSpreadRate * windAmplification * windSuppression;
+            float windFactor = windAmplification * windSuppression;
+
+            float hNeighbor = sampleHeight(neighborUv);
+            float heightDiff = hCurrent - hNeighbor;
+
+            float terrainFactor = 1.0;
+
+            if (heightDiff > 0.0) {
+                float slopeAngle = atan(heightDiff / dists[i]);
+                float normalizedSlope = slopeAngle / 1.5708;
+                terrainFactor = 1.0 + (exp(normalizedSlope * uSlopeFactor) - 1.0);
+                terrainFactor = min(terrainFactor, 6.0);
+            } else if (heightDiff < 0.0) {
+                float slopeAngle = atan(-heightDiff / dists[i]);
+                float normalizedSlope = slopeAngle / 1.5708;
+                terrainFactor = max(1.0 - normalizedSlope * uSlopeFactor * 0.6, 0.05);
+            }
+
+            float coupling = 1.0;
+            if (heightDiff > 0.0 && windBias > 0.0) {
+                coupling = 1.0 + windBias * (heightDiff / (heightDiff + 1.0)) * 0.8;
+            } else if (heightDiff < 0.0 && windBias > 0.0) {
+                coupling = 1.0 + windBias * 0.3;
+            } else if (heightDiff > 0.0 && windBias < 0.0) {
+                coupling = 1.0 + abs(heightDiff) / (abs(heightDiff) + 2.0) * 0.5;
+            }
+
+            float effectiveSpread = uSpreadRate * windFactor * terrainFactor * coupling;
 
             float humidityFactor = 1.0 - uHumidity * 0.8;
             effectiveSpread *= humidityFactor;

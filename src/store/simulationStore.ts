@@ -13,6 +13,7 @@ interface SimulationStore {
   temperatureDecay: number
   spreadRate: number
   simulationSpeed: number
+  slopeFactor: number
   resetTrigger: number
   ignitions: Array<{ x: number; y: number }>
   burnedPercent: number
@@ -40,6 +41,7 @@ export const useSimulationStore = create<SimulationStore>((set) => ({
   temperatureDecay: 0.97,
   spreadRate: 0.15,
   simulationSpeed: 1.0,
+  slopeFactor: 2.0,
   resetTrigger: 0,
   ignitions: [],
   burnedPercent: 0,

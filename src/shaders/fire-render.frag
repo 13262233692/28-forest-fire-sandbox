@@ -2,6 +2,7 @@ precision highp float;
 precision highp sampler2D;
 
 uniform sampler2D uStateTexture;
+uniform sampler2D uHeightmap;
 uniform sampler2D uWindTexture;
 uniform float uTime;
 uniform vec2 uResolution;
@@ -11,6 +12,8 @@ varying vec2 vUv;
 const float BURN_UNBURNED = 0.0;
 const float BURN_BURNING = 0.5;
 const float BURN_ASH = 1.0;
+
+const float TERRAIN_SCALE = 5.0;
 
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -38,6 +41,20 @@ float fbm(vec2 p) {
     return v;
 }
 
+float sampleHeight(vec2 uv) {
+    return texture2D(uHeightmap, uv).r * TERRAIN_SCALE;
+}
+
+vec3 computeTerrainNormal(vec2 uv) {
+    float dx = 1.0 / uResolution.x;
+    float dy = 1.0 / uResolution.y;
+    float hL = sampleHeight(uv + vec2(-dx, 0.0));
+    float hR = sampleHeight(uv + vec2( dx, 0.0));
+    float hD = sampleHeight(uv + vec2(0.0, -dy));
+    float hU = sampleHeight(uv + vec2(0.0,  dy));
+    return normalize(vec3(hL - hR, 2.0 * dx, hD - hU));
+}
+
 void main() {
     vec4 state = texture2D(uStateTexture, vUv);
     float fuel = state.r;
@@ -45,15 +62,35 @@ void main() {
     float burnState = state.b;
     float burnProgress = state.a;
 
+    float height = sampleHeight(vUv);
+    float normalizedHeight = clamp(height / TERRAIN_SCALE, 0.0, 1.0);
+
+    vec3 terrainNormal = computeTerrainNormal(vUv);
+    float slopeAngle = acos(clamp(terrainNormal.y, 0.0, 1.0));
+    float slopeFactor = clamp(slopeAngle / 1.5708, 0.0, 1.0);
+
     vec2 windVec = texture2D(uWindTexture, vUv).rg * 2.0 - 1.0;
 
+    vec3 valleyVeg = vec3(0.08, 0.18, 0.06);
+    vec3 midVeg = vec3(0.18, 0.30, 0.14);
+    vec3 ridgeVeg = vec3(0.30, 0.32, 0.15);
+    vec3 slopeVeg = vec3(0.22, 0.25, 0.10);
+
+    vec3 baseVegColor = mix(valleyVeg, midVeg, smoothstep(0.0, 0.5, normalizedHeight));
+    baseVegColor = mix(baseVegColor, ridgeVeg, smoothstep(0.5, 1.0, normalizedHeight));
+    baseVegColor = mix(baseVegColor, slopeVeg, slopeFactor * 0.5);
+
     vec3 vegetationColor = mix(
-        vec3(0.12, 0.22, 0.1),
-        vec3(0.28, 0.40, 0.25),
+        baseVegColor * 0.6,
+        baseVegColor * 1.3,
         fuel
     );
 
-    vec3 ashColor = vec3(0.12, 0.10, 0.08);
+    vec3 ashColor = mix(
+        vec3(0.12, 0.10, 0.08),
+        vec3(0.18, 0.15, 0.12),
+        normalizedHeight * 0.3
+    );
 
     vec3 fireBaseColor = vec3(1.0, 0.27, 0.0);
     vec3 fireTipColor = vec3(1.0, 0.85, 0.2);
@@ -89,13 +126,18 @@ void main() {
         vec2 fireUv = vUv;
         fireUv += windVec * vec2(0.02) * (1.0 - burnProgress);
 
+        vec3 slopeDir = normalize(vec3(terrainNormal.x, 0.0, terrainNormal.z));
+        float uphillComponent = -dot(vec3(windVec, 0.0), slopeDir);
+        fireUv += vec2(terrainNormal.x, terrainNormal.z) * 0.015 * max(uphillComponent, 0.0) * (1.0 - burnProgress);
+
         float fireNoise = fbm(fireUv * 8.0 + vec2(0.0, -uTime * 3.0));
         float fireNoise2 = fbm(fireUv * 15.0 + vec2(uTime * 1.5, -uTime * 4.0));
 
         float fireIntensity = (1.0 - burnProgress) * (0.6 + 0.4 * fireNoise);
 
-        float stretchFactor = 1.0 + max(dot(windVec, vec2(0.0, 1.0)), 0.0) * 1.5;
-        fireIntensity *= stretchFactor;
+        float windStretch = 1.0 + max(dot(windVec, vec2(0.0, 1.0)), 0.0) * 1.5;
+        float terrainStretch = 1.0 + slopeFactor * 0.8 * max(uphillComponent, 0.0);
+        fireIntensity *= windStretch * terrainStretch;
 
         vec3 fireColor = mix(fireBaseColor, fireTipColor, fireNoise);
         fireColor = mix(fireColor, fireCoreColor, fireNoise2 * 0.4);
@@ -110,6 +152,7 @@ void main() {
         float smokeNoise = fbm(vUv * 5.0 + vec2(uTime * 0.3, -uTime * 0.8));
         vec3 smokeColor = vec3(0.3, 0.28, 0.25);
         float smokeAmount = smoothstep(0.4, 0.8, burnProgress) * smokeNoise * 0.5;
+        smokeAmount *= (1.0 - slopeFactor * 0.3);
         color = mix(color, smokeColor, smokeAmount);
     }
 

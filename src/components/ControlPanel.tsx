@@ -9,6 +9,7 @@ import {
   Thermometer,
   Gauge,
   Zap,
+  Mountain,
 } from 'lucide-react'
 
 interface SliderProps {
@@ -78,7 +79,7 @@ export default function ControlPanel() {
         </p>
       </div>
 
-      <div className="p-4">
+      <div className="p-4 max-h-[calc(100vh-120px)] overflow-y-auto">
         <div className="flex gap-2 mb-4">
           <button
             onClick={store.toggleRunning}
@@ -165,6 +166,24 @@ export default function ControlPanel() {
             step={0.001}
             icon={<Gauge size={11} className="text-cyan-500" />}
             onChange={(v) => store.setParam('temperatureDecay', v)}
+          />
+        </div>
+
+        <div className="mt-4 pt-3 border-t border-white/[0.04]">
+          <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-2 font-mono"
+            style={{ fontFamily: 'Rajdhani, sans-serif' }}
+          >
+            地形影响
+          </div>
+
+          <Slider
+            label="坡度系数"
+            value={store.slopeFactor}
+            min={0}
+            max={5.0}
+            step={0.1}
+            icon={<Mountain size={11} className="text-amber-500" />}
+            onChange={(v) => store.setParam('slopeFactor', v)}
           />
         </div>
 

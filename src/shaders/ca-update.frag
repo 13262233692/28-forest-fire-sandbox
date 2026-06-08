@@ -13,6 +13,7 @@ uniform float uTemperatureDecay;
 uniform float uSpreadRate;
 uniform float uHumidity;
 uniform float uDelta;
+uniform float uMaxTempIncrease;
 uniform int uReset;
 
 varying vec2 vUv;
@@ -89,12 +90,15 @@ void main() {
 
             float windBias = dot(windVec, dirToNeighbor);
 
-            float effectiveSpread = uSpreadRate * (1.0 + windBias * 2.5);
+            float windAmplification = 1.0 + max(windBias, 0.0) * 2.5;
+            float windSuppression = max(1.0 + min(windBias, 0.0) * 0.9, 0.05);
 
-            effectiveSpread = max(effectiveSpread, 0.02);
+            float effectiveSpread = uSpreadRate * windAmplification * windSuppression;
 
             float humidityFactor = 1.0 - uHumidity * 0.8;
             effectiveSpread *= humidityFactor;
+
+            effectiveSpread = max(effectiveSpread, 0.0);
 
             float distanceInv = 1.0 / dists[i];
 
@@ -105,35 +109,41 @@ void main() {
     }
 
     float newTemp = temperature;
+    float newFuel = fuel;
+    float newBurnState = burnState;
+    float newBurnProgress = burnProgress;
 
     if (burnState < 0.25) {
-        newTemp = temperature + heatInput * uDelta;
-        newTemp *= uTemperatureDecay;
+        float tempIncrease = min(heatInput, uMaxTempIncrease);
+        newTemp = temperature + tempIncrease;
+
+        float decayFactor = pow(uTemperatureDecay, uDelta);
+        newTemp *= decayFactor;
 
         if (newTemp > uIgnitionThreshold && fuel > 0.1) {
-            burnState = BURN_BURNING;
+            newBurnState = BURN_BURNING;
             newTemp = 1.0;
         }
     } else if (burnState > 0.25 && burnState < 0.75) {
         newTemp = 1.0;
-        burnProgress += uBurnRate * uDelta;
-        fuel -= uFuelConsumptionRate * uDelta;
+        newBurnProgress = burnProgress + uBurnRate;
+        newFuel = fuel - uFuelConsumptionRate;
 
-        if (fuel <= 0.0) {
-            fuel = 0.0;
-            burnState = BURN_ASH;
+        if (newFuel <= 0.0) {
+            newFuel = 0.0;
+            newBurnState = BURN_ASH;
             newTemp = 0.0;
-            burnProgress = 1.0;
+            newBurnProgress = 1.0;
         }
-        if (burnProgress >= 1.0) {
-            burnState = BURN_ASH;
+        if (newBurnProgress >= 1.0) {
+            newBurnState = BURN_ASH;
             newTemp = 0.0;
         }
     }
 
-    fuel = clamp(fuel, 0.0, 1.0);
+    newFuel = clamp(newFuel, 0.0, 1.0);
     newTemp = clamp(newTemp, 0.0, 1.0);
-    burnProgress = clamp(burnProgress, 0.0, 1.0);
+    newBurnProgress = clamp(newBurnProgress, 0.0, 1.0);
 
-    gl_FragColor = vec4(fuel, newTemp, burnState, burnProgress);
+    gl_FragColor = vec4(newFuel, newTemp, newBurnState, newBurnProgress);
 }

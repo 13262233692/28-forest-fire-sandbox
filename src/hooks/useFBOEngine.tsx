@@ -10,26 +10,26 @@ import fireRenderFrag from '@/shaders/fire-render.frag?raw'
 class FBOEngine {
   gl: THREE.WebGLRenderer
   resolution: number
-  stateA: THREE.WebGLRenderTarget
-  stateB: THREE.WebGLRenderTarget
+  readBuffer: THREE.WebGLRenderTarget
+  writeBuffer: THREE.WebGLRenderTarget
   windTexture: THREE.DataTexture
   ignitionTexture: THREE.DataTexture
   ignitionData: Uint8Array
-  caMaterial: THREE.ShaderMaterial
-  renderMaterial: THREE.ShaderMaterial
+  caMaterial: THREE.RawShaderMaterial
+  renderMaterial: THREE.RawShaderMaterial
   scene: THREE.Scene
   camera: THREE.OrthographicCamera
   quad: THREE.Mesh
-  pingPong: boolean
   initialized: boolean
   stepCount: number
+  lastReadBufferId: number
 
   constructor(gl: THREE.WebGLRenderer, resolution: number) {
     this.gl = gl
     this.resolution = resolution
-    this.pingPong = false
     this.initialized = false
     this.stepCount = 0
+    this.lastReadBufferId = -1
 
     const size = resolution
 
@@ -42,8 +42,8 @@ class FBOEngine {
       wrapT: THREE.ClampToEdgeWrapping,
     }
 
-    this.stateA = new THREE.WebGLRenderTarget(size, size, rtOpts)
-    this.stateB = new THREE.WebGLRenderTarget(size, size, rtOpts)
+    this.readBuffer = new THREE.WebGLRenderTarget(size, size, rtOpts)
+    this.writeBuffer = new THREE.WebGLRenderTarget(size, size, rtOpts)
 
     const windData = new Float32Array(size * size * 4)
     const dir = (45 * Math.PI) / 180
@@ -85,6 +85,7 @@ class FBOEngine {
         uSpreadRate: { value: 0.15 },
         uHumidity: { value: 0.2 },
         uDelta: { value: 1.0 },
+        uMaxTempIncrease: { value: 0.35 },
         uReset: { value: 0 },
       },
       depthTest: false,
@@ -118,19 +119,19 @@ class FBOEngine {
     this.quad.material = this.caMaterial
 
     const gl = this.gl
-    const oldRt = gl.getRenderTarget()
 
-    gl.setRenderTarget(this.stateA)
+    gl.setRenderTarget(null)
+    gl.setRenderTarget(this.readBuffer)
     gl.render(this.scene, this.camera)
+    gl.setRenderTarget(null)
 
-    gl.setRenderTarget(this.stateB)
+    gl.setRenderTarget(this.writeBuffer)
     gl.render(this.scene, this.camera)
-
-    gl.setRenderTarget(oldRt)
+    gl.setRenderTarget(null)
 
     this.caMaterial.uniforms.uReset.value = 0
     this.initialized = true
-    this.pingPong = false
+    this.stepCount = 0
   }
 
   setWindDirection(direction: number, speed: number) {
@@ -172,6 +173,12 @@ class FBOEngine {
     this.ignitionTexture.needsUpdate = true
   }
 
+  swapBuffers() {
+    const temp = this.readBuffer
+    this.readBuffer = this.writeBuffer
+    this.writeBuffer = temp
+  }
+
   step(params: {
     ignitionThreshold: number
     burnRate: number
@@ -180,32 +187,33 @@ class FBOEngine {
     temperatureDecay: number
     spreadRate: number
     humidity: number
-    simulationSpeed: number
+    delta: number
+    maxTempIncrease: number
   }) {
     const gl = this.gl
-    const oldRt = gl.getRenderTarget()
 
-    const read = this.pingPong ? this.stateB : this.stateA
-    const write = this.pingPong ? this.stateA : this.stateB
+    gl.setRenderTarget(null)
 
-    this.caMaterial.uniforms.uStateTexture.value = read.texture
+    this.caMaterial.uniforms.uStateTexture.value = this.readBuffer.texture
     this.caMaterial.uniforms.uIgnitionThreshold.value = params.ignitionThreshold
-    this.caMaterial.uniforms.uBurnRate.value = params.burnRate * params.simulationSpeed
-    this.caMaterial.uniforms.uFuelConsumptionRate.value = params.fuelConsumptionRate * params.simulationSpeed
+    this.caMaterial.uniforms.uBurnRate.value = params.burnRate * params.delta
+    this.caMaterial.uniforms.uFuelConsumptionRate.value = params.fuelConsumptionRate * params.delta
     this.caMaterial.uniforms.uWindStrength.value = params.windStrength
     this.caMaterial.uniforms.uTemperatureDecay.value = params.temperatureDecay
-    this.caMaterial.uniforms.uSpreadRate.value = params.spreadRate
+    this.caMaterial.uniforms.uSpreadRate.value = params.spreadRate * params.delta
     this.caMaterial.uniforms.uHumidity.value = params.humidity
-    this.caMaterial.uniforms.uDelta.value = params.simulationSpeed
+    this.caMaterial.uniforms.uDelta.value = params.delta
+    this.caMaterial.uniforms.uMaxTempIncrease.value = params.maxTempIncrease * params.delta
 
     this.quad.material = this.caMaterial
 
-    gl.setRenderTarget(write)
+    gl.setRenderTarget(this.writeBuffer)
     gl.render(this.scene, this.camera)
 
-    gl.setRenderTarget(oldRt)
+    gl.setRenderTarget(null)
 
-    this.pingPong = !this.pingPong
+    this.swapBuffers()
+
     this.stepCount++
 
     if (this.stepCount % 10 === 0) {
@@ -213,31 +221,37 @@ class FBOEngine {
     }
   }
 
+  forceGpuSync() {
+    const gl = this.gl
+    const ctx = gl.getContext() as WebGL2RenderingContext
+    if (ctx && typeof ctx.finish === 'function') {
+      ctx.finish()
+    }
+  }
+
   reset() {
     this.initialized = false
     this.stepCount = 0
-    this.pingPong = false
     this.ignitionData.fill(0)
     this.ignitionTexture.needsUpdate = true
     this.initialize()
   }
 
   getCurrentStateTexture(): THREE.Texture {
-    return (this.pingPong ? this.stateB : this.stateA).texture
+    return this.readBuffer.texture
   }
 
   computeStats(): { burned: number; active: number; velocity: number } {
     const size = this.resolution
-    const read = this.pingPong ? this.stateB : this.stateA
 
     const gl = this.gl
-    const oldRt = gl.getRenderTarget()
-    gl.setRenderTarget(read)
+    gl.setRenderTarget(null)
+    gl.setRenderTarget(this.readBuffer)
 
     const pixels = new Float32Array(size * size * 4)
-    gl.readRenderTargetPixels(read, 0, 0, size, size, pixels)
+    gl.readRenderTargetPixels(this.readBuffer, 0, 0, size, size, pixels)
 
-    gl.setRenderTarget(oldRt)
+    gl.setRenderTarget(null)
 
     let burned = 0
     let active = 0
@@ -265,8 +279,8 @@ class FBOEngine {
   }
 
   dispose() {
-    this.stateA.dispose()
-    this.stateB.dispose()
+    this.readBuffer.dispose()
+    this.writeBuffer.dispose()
     this.windTexture.dispose()
     this.ignitionTexture.dispose()
     this.caMaterial.dispose()
@@ -338,8 +352,12 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
     const state = useSimulationStore.getState()
 
     if (state.isRunning) {
-      const steps = Math.max(1, Math.round(state.simulationSpeed))
-      for (let i = 0; i < steps; i++) {
+      const simSpeed = state.simulationSpeed
+      const maxSubSteps = 8
+      const subSteps = Math.min(Math.max(1, Math.round(simSpeed)), maxSubSteps)
+      const delta = simSpeed / subSteps
+
+      for (let i = 0; i < subSteps; i++) {
         engine.step({
           ignitionThreshold: state.ignitionThreshold,
           burnRate: state.burnRate,
@@ -348,8 +366,13 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
           temperatureDecay: state.temperatureDecay,
           spreadRate: state.spreadRate,
           humidity: state.humidity,
-          simulationSpeed: 1.0,
+          delta,
+          maxTempIncrease: 0.35,
         })
+
+        if (subSteps > 1 && i < subSteps - 1) {
+          engine.forceGpuSync()
+        }
       }
     }
 
